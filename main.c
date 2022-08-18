@@ -5,6 +5,7 @@
 #include <string.h>
 #define  ARRAY_SIZE(xs) (sizeof(xs)/sizeof(xs[0]))
 #define VM_STACK_CAPACITY 1024
+#define VM_EXECUTION_LIMIT 69
 #define VM_PROGRAM_CAPACITY 1024
 #define MAKE_INST_PUSH(value)   {.type=INST_PUSH,.operand=(value)}
 #define MAKE_INST_PLUS {.type=INST_PLUS}
@@ -12,7 +13,9 @@
 #define MAKE_INST_MULT {.type=INST_MULT}
 #define MAKE_INST_DIV {.type=INST_DIV}
 #define MAKE_INST_JMP(address) {.type=INST_JMP,.operand=(address)}
+#define MAKE_INST_DUP(address) {.type=INST_DUP,.operand=(address)}
 #define MAKE_INST_HALT {.type=INST_HALT}
+
 
 
 typedef int64_t Word;
@@ -23,15 +26,20 @@ typedef enum{
     ERR_ILLEGAL_INST,
     ERR_DIV_BY_ZERO,
     ERR_ILLEGAL_INST_ACCESS,
+    ERR_ILLEGAL_OPERAND,
 } Trap;
 typedef enum {
     INST_PUSH,
+    INST_DUP,
     INST_PLUS,
     INST_MINUS,
     INST_MULT,
     INST_DIV,
+    INST_JMP_IF,
     INST_JMP,
+    INST_EQ,
     INST_HALT,
+    INST_PRINT_DEBUG,
 } Inst_Type;
 typedef struct{
     Inst_Type type;
@@ -50,6 +58,9 @@ const char *inst_type_as_cstr(Inst_Type type){
     case INST_PUSH:
         return "INST_PUSH";
         break;
+    case INST_DUP:
+        return "INST_DUP";
+        break;
     case INST_PLUS:
         return "INST_PLUS";
         break;
@@ -65,8 +76,17 @@ const char *inst_type_as_cstr(Inst_Type type){
     case INST_JMP:
         return "INST_JMP";
         break;
+    case INST_JMP_IF:
+        return "INST_JMP_IF";
+        break;
+    case INST_EQ:
+        return "INST_EQ";
+        break;
     case INST_HALT:
         return "INST_HALT";
+        break;
+    case INST_PRINT_DEBUG:
+        return "INST_PRINT_DEBUG";
         break;
     default: assert(0 && "inst_type_as_cstr: unreachable");    
     }
@@ -84,6 +104,20 @@ Trap vm_execute_inst(Vm * vm){
             vm->stack[vm->stack_size++]=inst.operand;
             vm->program_size+=sizeof(Inst);
             vm->ip+=1;
+            break;
+        case INST_DUP:
+            if(vm->stack_size>=VM_STACK_CAPACITY){
+                return ERR_STACK_OVERFLOW;
+            }
+            if(vm->stack_size-inst.operand<=0){
+                return ERR_STACK_UNDERFLOW;
+            }
+            if(inst.operand<0){
+                return ERR_ILLEGAL_OPERAND;
+            }
+            vm->stack[vm->stack_size]=vm->stack[vm->stack_size-1-inst.operand];
+            vm->stack_size+=1;
+            vm->ip +=1;
             break;
         case INST_PLUS:
             if(vm->stack_size<2){
@@ -128,8 +162,36 @@ Trap vm_execute_inst(Vm * vm){
             vm->program_size+=sizeof(Inst);
             vm->ip = inst.operand;
             break;
+        case INST_EQ:
+            if(vm->stack_size<2){
+                return ERR_STACK_UNDERFLOW;
+            }
+            vm->program_size+=sizeof(Inst);
+            vm->stack[vm->stack_size-2]= vm->stack[vm->stack_size-1]==vm->stack[vm->stack_size-2];
+            vm->stack_size-=1;
+            vm->ip+=1;
+            break;
+        case INST_JMP_IF:
+            if(vm->stack_size<1){
+                return ERR_STACK_UNDERFLOW;
+            }
+            if(vm->stack[vm->stack_size-1]){
+                vm->stack_size -=1;
+                vm->ip=inst.operand;
+            } else{
+                vm->ip +=1;
+            }
+            break;
         case INST_HALT:
             vm->halt= 1;
+            break;
+        case INST_PRINT_DEBUG:
+            if(vm->stack_size<1){
+                return ERR_STACK_UNDERFLOW;
+            }
+            printf("%ld\n",vm->stack[vm->stack_size-1]);
+            vm->stack_size-=1;
+            vm->ip +=1;   
             break;
         default:
             return ERR_ILLEGAL_INST;
@@ -149,7 +211,9 @@ const char * err_as_cstr(Trap trap){
         case ERR_DIV_BY_ZERO:
             return "ERR_DIV_BY_ZERO"; 
         case ERR_ILLEGAL_INST_ACCESS:
-            return "ERR_ILLEGAL_INST_ACCESS";  
+            return "ERR_ILLEGAL_INST_ACCESS"; 
+        case ERR_ILLEGAL_OPERAND:
+            return "ERR_ILLEGAL_OPERAND"; 
         default:
             assert(0 && "ERR_as_cstr:Unreachable");
     }
@@ -166,9 +230,12 @@ void vm_dump(FILE *stream, const Vm *vm){
 }
 Vm vm={0};
 Inst program[]={
-     MAKE_INST_PUSH(69),
-     MAKE_INST_PUSH(12),
+     MAKE_INST_PUSH(0),
+     MAKE_INST_PUSH(1),
+     MAKE_INST_DUP(1),
+     MAKE_INST_DUP(1),
      MAKE_INST_PLUS,
+     MAKE_INST_JMP(2),
      MAKE_INST_HALT,
 };
 void vm_load_program_from_memory(Vm * vm, Inst *program,Word program_size){
@@ -178,7 +245,7 @@ void vm_load_program_from_memory(Vm * vm, Inst *program,Word program_size){
 void main(){
     vm_load_program_from_memory(&vm,program,ARRAY_SIZE(program));
     vm_dump(stdout,&vm);
-    while(!vm.halt){
+    for(int i=0;i<VM_EXECUTION_LIMIT && !vm.halt;++i){
        printf("\nInstruction:");
        printf("%s\n",inst_type_as_cstr(program[vm.ip].type));
        Trap trap= vm_execute_inst(&vm);
